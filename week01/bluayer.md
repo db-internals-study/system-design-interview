@@ -1,0 +1,40 @@
+- 단일 서버
+- 데이터베이스
+    - RDBMS
+    - NoSQL
+        - Low latency / unstructured / Data serialization, deserialization / A lot of data
+    - https://aws.amazon.com/ko/compare/the-difference-between-acid-and-base-database/
+- Scale up vs Scale out
+    - LB
+    - Database 다중화
+        - Master-Slave
+- 캐시
+    - read through
+    - 바람직한 캐시
+        - 데이터 갱신은 자주 일어나지 않지만 참조가 빈번하다면
+        - 영속할 데이터를 캐시에 두는 것은 바람직하지 않다
+        - Expire (Stempede)
+        - consistency
+        - Failure & DR
+        - Sizing
+        - Eviction
+- CDN
+    - 비용
+    - 적절한 TTL
+    - CDN Failover
+    - contents invalidation
+- Stateless Web 계층
+- 데이터 센터
+    - geo-routing
+    - multiple-data center architecture
+        - 트래픽 라우팅
+        - data sync
+        - test and deployment
+- Message Queue
+    - 느슨한 결합
+- 로그, 메트릭 그리고 자동화
+- 데이터베이스 수평적 확장
+    - Not a silver bullet
+        - resharding
+        - celebrity issue
+        - join and de-nomalization
