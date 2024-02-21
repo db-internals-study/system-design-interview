@@ -1,0 +1,107 @@
+- Rate limiter
+    - 트래픽의 rate를 제어하기 위한 장치. API 요청 횟수가 limiter에 정의된 threshold를 넘어가면 추가로 도달한 모든 호출은 처리 중단
+- 이점
+    - DoS에 의한 resource starvation 방지
+    - 비용 절감
+    - 서버 과부하 방지
+- Client side rate limiter : 위변조가 가능하기 때문에 적절치 못함
+- Server side
+    - middleware
+    - API gateway
+        - Rate limit / SSL Termination / authentication / IP Whitelist 관리
+        - 서버에 두어야 할지, Gateway에 둬야 할지
+- 처리율 제한 알고리즘
+    - Token bucket
+        - General : endpoint마다 버킷
+        - IP 주소별로 제한해야 하면 : IP 주소마다 버킷
+        - 시스템의 처리율을 초당 10K로 제한한다면 모든 요청이 하나의 버킷을 공유
+        - 장점
+            - 구현이 쉽다
+            - 메모리 사용 측면에서도 효율적이다
+            - Burst of traffic 처리 가능
+        - 단점
+            - 버킷 크기, 토큰 공급률의 임계값을 정하는 것이 어려움
+    - Leaky bucket
+        - 요청 처리율이 고정 (FIFO로 구현)
+            - 요청이 도착하면 큐가 가득 차 있는지 봄. 빈 자리가 있으면 큐에 요청 추가
+                - 큐가 가득 차 있으면 버림
+            - 지정된 시간마다 큐에서 요청 꺼내서 처리
+        - 장점
+            - 큐 크기 제한 - 메모리 측면 효율
+            - 고정된 처리율로 인한 stable outflow rate
+        - 단점
+            - Spike traffic 시 버려지는 최신 요청
+            - 두 개의 인자(큐 크키, 처리율) 임계값 설정이 어려움
+    - Fixed window counter
+        - Timeline을 Fixed window로 나누고, 각 window마다 counter를 붙인다
+        - 요청이 접수될 때마다 이 카운터는 +1
+        - 카운터 값이 사전에 설정된 임게에 도달하면 새 요청은 새 위도가 열릴 때까지 버려짐
+        - 장점
+            - 메모리 효율이 좋음
+            - 이해하기 쉬움
+            - window가 닫히는 시점에 카운터를 초기화하는 방식은 특정 트래픽 패턴을 처리하기 적합
+        - 단점
+            - window 경계 부근에 일시적으로 많은 트래픽이 몰리면, 기대했던 처리한도보다 더 많은 양을 처리
+    - Sliding window log
+        - Request의 timestamp를 추적 → sorted set 같은 곳에 보관
+        - 새 요청이 오면 만료된 타임스탬프(현재 window의 시작 시점보다 오래된 타임스탬프)는 제거
+        - 새 요청의 timestamp를 log에 추가
+        - log의 크기가 허용치보다 같거나 작으면 요청을 시스템에 전달
+        - 장점
+            - 정교함. 허용되는 요청의 개수는 시스템의 처리율 한도를 넘지 않음
+        - 단점
+            - 다량의 메모리 사용 (거부된 요청의 timestamp도 보관하기 때문)
+    - Sliding window counter
+        - 현재 1분 간의 요청 수 + 직전 1분 간의 요청 수 X 이동 윈도와 직전 1분이 겹치는 비율
+            - 이것을 윈도 임계값으로 보고 처리
+        - 장점
+            - 짧은 시간에 몰리는 트래픽에도 잘 대응
+            - 메모리 효율이 좋음
+        - 단점
+            - 직전 시간대에 도착한 요청이 균등하게 분포되어 있다고 가정한 상태에서 계산하기 때문에 다소 느슨
+            - Cloudflare에서 실시했던 실험에 따르면 40억 개중 0.003% (1200만개)
+- 카운터는 어디에?
+    - DB에 보관하지 않음. 느리니깐
+    - 캐시가 바람직 (빠르고 TTL 지원)
+- 상세 설계
+    - 처리율 제한 규칙은 어떻게 만들어지고 어디에 저장되는가?
+    - 처리가 제한된 요청들은 어떻게 처리되는가?
+    - 클라이언트가 자기 요청이 처리율 제한에 걸리고 있는지 어떻게 알지?
+        - HTTP Response header
+            - X-Ratelimit-Remaining : 윈도 내에 남은 처리 가능 요청 수
+            - X-Ratelimit-Limit : 매 윈도마다 클라이언트가 전송할 수 있는 요청 수
+            - X-Ratelimit-Retry-After : 한도 제한에 걸리지 않으려면 몇 초 뒤에 요청을 다시 보내야 하는지 알림
+    - 설계
+        - 규칙을 캐시에 보관
+        - 클라이언트가 요청을 서버에 보내면 미들웨어가 받음
+        - 미들 웨어는 제한 규칙을 캐시에서 가져오고, 카운터 및 마지막 요청의 timestamp를 레디스에서 가져옴
+            - 해당 요청이 처리율 제한에 걸리지 않으면 API로
+            - 걸렸다면 429를 클라이언트에게 보내거나 MQ에 보관
+    - 단일 서버면 어렵지 않지만, 분산 환경이라면?
+        - Race condition
+            - Counter? → Lock?
+                - 해결책이지만 Performace 저하
+            - Lua script
+            - Sorted Set
+        - Synchronization
+            - Multiple rate limiter for millions
+                - How to sync?
+                - Client에 대한 정보가 없기 때문에 한 Client만 이득을 볼 수도 있음
+                - Sticky session? Too bad
+                - 중간에 Redis를 두기
+        - Improved Performance
+            - Latency → Edge server
+            - Sync 시에 eventual consistency
+        - Monitoring
+            - 처리율 제한 알고리즘/규칙이 효과적인지
+- More…
+    - Hard or soft rate limit
+        - Hard limit :절대 넘어설 수 없음
+        - Soft limit : 잠시동안은 넘어설 수 있음
+    - 다양한 layer에서의 rate limit
+        - Iptables를 사용한 IP 주소에 대한 처리율
+    - 처리율 제한을 회피하는 방법 : 클라이언트 설계
+        - Client side cache
+        - 짧은 시간 동안 너무 많은 메시지 X (Exponential backoff)
+        - Exception, error handling for graceful failing over
+        - Retry? enough backoff
